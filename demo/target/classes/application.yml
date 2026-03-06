@@ -1,0 +1,25 @@
+server:
+  port: 8088
+
+# Netty配置
+netty:
+  websocket:
+    port: 8888
+    boss-thread-count: 1
+    worker-thread-count: 8
+    idle-time: 60 # 心跳检测超时时间（秒）
+
+# Redis配置（集群广播用）
+spring:
+  redis:
+    host: localhost
+    port: 6379
+    password:
+    database: 0
+    timeout: 2000ms
+
+# JWT配置
+jwt:
+  secret: your-secret-key-32bytes-long-12345678
+  expire: 86400 # token有效期（秒）
+  issuer: chat-room-server
