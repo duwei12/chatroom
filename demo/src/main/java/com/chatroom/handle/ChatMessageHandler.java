@@ -2,8 +2,8 @@ package com.chatroom.handle;
 
 import com.alibaba.fastjson.JSON;
 import com.chatroom.pojo.ChatMessage;
+import com.chatroom.service.RoomService;
 import com.chatroom.utils.JwtUtil;
-import com.chatroom.utils.RedisPubSubUtil;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -17,40 +17,32 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.util.Objects;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * 聊天室消息处理器（核心）
- */
 @Slf4j
 @Component
-@ChannelHandler.Sharable // 标记为可共享（单例）
+@ChannelHandler.Sharable
 @RequiredArgsConstructor
 public class ChatMessageHandler extends SimpleChannelInboundHandler<TextWebSocketFrame> {
 
-    // 存储用户ID与Channel的映射（单节点）
-    private static final ConcurrentHashMap<String, Channel> USER_CHANNEL_MAP = new ConcurrentHashMap<>();
-    // Channel属性：存储用户ID
     private static final AttributeKey<String> USER_ID_KEY = AttributeKey.valueOf("userId");
+    private static final AttributeKey<String> ROOM_ID_KEY = AttributeKey.valueOf("roomId");
+    /** roomId -> Set<Channel> */
+    private static final ConcurrentHashMap<String, Set<Channel>> ROOM_CHANNELS_MAP = new ConcurrentHashMap<>();
 
     private final JwtUtil jwtUtil;
-    private final RedisPubSubUtil redisPubSubUtil;
     private final RedisTemplate<String, String> redisTemplate;
+    private final RoomService roomService;
 
-    /**
-     * 处理客户端发送的文本消息
-     */
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, TextWebSocketFrame frame) {
         String msgJson = frame.text();
-        log.info("收到客户端消息：{}", msgJson);
+        log.debug("收到消息: {}", msgJson);
 
         try {
-            // 1. 解析消息
             ChatMessage message = JSON.parseObject(msgJson, ChatMessage.class);
-
-            // 2. 处理不同消息类型
             switch (message.getType()) {
                 case "CONNECT":
                     handleConnect(ctx, message);
@@ -65,7 +57,6 @@ public class ChatMessageHandler extends SimpleChannelInboundHandler<TextWebSocke
                     handleDisconnect(ctx);
                     break;
                 default:
-                    log.warn("未知消息类型：{}", message.getType());
                     sendError(ctx, "未知消息类型");
             }
         } catch (Exception e) {
@@ -74,144 +65,145 @@ public class ChatMessageHandler extends SimpleChannelInboundHandler<TextWebSocke
         }
     }
 
-    /**
-     * 处理客户端连接（认证）
-     */
     private void handleConnect(ChannelHandlerContext ctx, ChatMessage message) {
-        // 1. 验证JWT令牌
         String token = message.getToken();
         if (token == null || !jwtUtil.validateToken(token)) {
-            sendError(ctx, "认证失败，无效的token");
+            sendError(ctx, "认证失败");
             ctx.close();
             return;
         }
 
-        // 2. 解析用户ID
         String userId = jwtUtil.extractUserId(token);
         if (userId == null) {
-            sendError(ctx, "认证失败，无用户信息");
+            sendError(ctx, "认证失败");
             ctx.close();
             return;
         }
 
-        // 3. 存储用户与Channel的映射
+        String roomId = message.getRoomId();
+        if (roomId == null || roomId.trim().isEmpty()) {
+            sendError(ctx, "房间ID不能为空");
+            ctx.close();
+            return;
+        }
+
+        if (!roomService.exists(roomId)) {
+            sendError(ctx, "房间不存在");
+            ctx.close();
+            return;
+        }
+
         Channel channel = ctx.channel();
         channel.attr(USER_ID_KEY).set(userId);
-        USER_CHANNEL_MAP.put(userId, channel);
+        channel.attr(ROOM_ID_KEY).set(roomId);
 
-        // 4. 发送连接成功响应
+        ROOM_CHANNELS_MAP.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet()).add(channel);
+
         ChatMessage response = new ChatMessage();
         response.setType("CONNECT_SUCCESS");
         response.setContent("连接成功");
+        response.setRoomId(roomId);
         channel.writeAndFlush(new TextWebSocketFrame(JSON.toJSONString(response)));
-
-        log.info("用户{}连接成功", userId);
+        log.info("用户 {} 加入房间 {}", userId, roomId);
     }
 
-    /**
-     * 处理普通消息（广播/私聊）
-     */
     private void handleMessage(ChannelHandlerContext ctx, ChatMessage message) {
         String senderId = ctx.channel().attr(USER_ID_KEY).get();
-        if (senderId == null) {
-            sendError(ctx, "未认证，无法发送消息");
+        String roomId = ctx.channel().attr(ROOM_ID_KEY).get();
+        if (senderId == null || roomId == null) {
+            sendError(ctx, "未认证");
             return;
         }
+
         message.setSenderId(senderId);
+        message.setRoomId(roomId);
         message.setTimestamp(System.currentTimeMillis());
 
-        // 1. 私聊：指定接收者
         if (message.getReceiverId() != null && !message.getReceiverId().isEmpty()) {
-            Channel receiverChannel = USER_CHANNEL_MAP.get(message.getReceiverId());
-            if (receiverChannel != null && receiverChannel.isActive()) {
-                receiverChannel.writeAndFlush(new TextWebSocketFrame(JSON.toJSONString(message)));
-            } else {
-                // 离线消息：存入Redis（可选）
-                redisTemplate.opsForList().leftPush("chat:offline:" + message.getReceiverId(), JSON.toJSONString(message));
-                sendError(ctx, "接收者离线，消息已缓存");
+            // 私聊暂简化：在同一房间内找接收者
+            Set<Channel> channels = ROOM_CHANNELS_MAP.get(roomId);
+            if (channels != null) {
+                for (Channel ch : channels) {
+                    if (message.getReceiverId().equals(ch.attr(USER_ID_KEY).get()) && ch.isActive()) {
+                        ch.writeAndFlush(new TextWebSocketFrame(JSON.toJSONString(message)));
+                        return;
+                    }
+                }
             }
-        }
-        // 2. 广播：发布到Redis（集群同步）
-        else {
-            redisPubSubUtil.publish("chat:broadcast", JSON.toJSONString(message));
+            redisTemplate.opsForList().leftPush("chat:offline:" + message.getReceiverId(), JSON.toJSONString(message));
+            sendError(ctx, "对方离线，消息已缓存");
+        } else {
+            redisTemplate.convertAndSend("chat:broadcast", JSON.toJSONString(message));
         }
     }
 
-    /**
-     * 处理心跳请求
-     */
     private void handlePing(ChannelHandlerContext ctx) {
         ChatMessage pong = new ChatMessage();
         pong.setType("PONG");
         ctx.channel().writeAndFlush(new TextWebSocketFrame(JSON.toJSONString(pong)));
     }
 
-    /**
-     * 处理客户端断开连接
-     */
     private void handleDisconnect(ChannelHandlerContext ctx) {
-        String userId = ctx.channel().attr(USER_ID_KEY).get();
-        if (userId != null) {
-            USER_CHANNEL_MAP.remove(userId);
-            log.info("用户{}主动断开连接", userId);
-        }
+        removeFromRoom(ctx.channel());
         ctx.close();
     }
 
-    /**
-     * 处理空闲超时（心跳检测）
-     */
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
         if (evt instanceof IdleStateEvent) {
             IdleStateEvent event = (IdleStateEvent) evt;
             if (event.state() == IdleState.READER_IDLE) {
-                log.warn("用户{}读空闲超时，断开连接", ctx.channel().attr(USER_ID_KEY).get());
                 ctx.close();
             }
         }
     }
 
-    /**
-     * 客户端连接断开（被动）
-     */
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
-        String userId = ctx.channel().attr(USER_ID_KEY).get();
+        removeFromRoom(ctx.channel());
+    }
+
+    private void removeFromRoom(Channel channel) {
+        String roomId = channel.attr(ROOM_ID_KEY).get();
+        String userId = channel.attr(USER_ID_KEY).get();
+        if (roomId != null) {
+            Set<Channel> set = ROOM_CHANNELS_MAP.get(roomId);
+            if (set != null) {
+                set.remove(channel);
+                if (set.isEmpty()) {
+                    ROOM_CHANNELS_MAP.remove(roomId);
+                }
+            }
+        }
         if (userId != null) {
-            USER_CHANNEL_MAP.remove(userId);
-            log.info("用户{}连接断开", userId);
+            log.info("用户 {} 离开房间 {}", userId, roomId);
         }
     }
 
-    /**
-     * 处理异常
-     */
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("通道异常", cause);
         ctx.close();
     }
 
-    /**
-     * 发送错误消息
-     */
-    private void sendError(ChannelHandlerContext ctx, String message) {
+    private void sendError(ChannelHandlerContext ctx, String content) {
         ChatMessage error = new ChatMessage();
         error.setType("ERROR");
-        error.setContent(message);
+        error.setContent(content);
         ctx.channel().writeAndFlush(new TextWebSocketFrame(JSON.toJSONString(error)));
     }
 
-    /**
-     * 处理Redis广播消息（集群同步）
-     */
     public void handleRedisBroadcast(String msgJson) {
         ChatMessage message = JSON.parseObject(msgJson, ChatMessage.class);
-        // 广播给当前节点所有在线用户
-        for (Channel channel : USER_CHANNEL_MAP.values()) {
-            if (channel.isActive()) {
-                channel.writeAndFlush(new TextWebSocketFrame(msgJson));
+        String roomId = message.getRoomId();
+        if (roomId == null) return;
+
+        Set<Channel> channels = ROOM_CHANNELS_MAP.get(roomId);
+        if (channels != null) {
+            for (Channel ch : channels) {
+                if (ch.isActive()) {
+                    ch.writeAndFlush(new TextWebSocketFrame(msgJson));
+                }
             }
         }
     }

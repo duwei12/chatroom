@@ -24,9 +24,6 @@ import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Netty WebSocket服务启动器
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -34,13 +31,10 @@ public class NettyWebSocketUtil {
 
     @Value("${netty.websocket.port}")
     private int port;
-
     @Value("${netty.websocket.boss-thread-count}")
     private int bossThreadCount;
-
     @Value("${netty.websocket.worker-thread-count}")
     private int workerThreadCount;
-
     @Value("${netty.websocket.idle-time}")
     private int idleTime;
 
@@ -50,62 +44,46 @@ public class NettyWebSocketUtil {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
 
-    /**
-     * 启动Netty服务（Spring初始化后执行）
-     */
     @PostConstruct
     public void start() {
-        bossGroup = new NioEventLoopGroup(bossThreadCount);
-        workerGroup = new NioEventLoopGroup(workerThreadCount);
+        Thread nettyThread = new Thread(() -> {
+            bossGroup = new NioEventLoopGroup(bossThreadCount);
+            workerGroup = new NioEventLoopGroup(workerThreadCount);
 
-        try {
-            ServerBootstrap bootstrap = new ServerBootstrap();
-            bootstrap.group(bossGroup, workerGroup)
-                    .channel(NioServerSocketChannel.class)
-                    // 开启TCP底层心跳保活
-                    .option(ChannelOption.SO_KEEPALIVE, true)
-                    // 连接队列大小
-                    .option(ChannelOption.SO_BACKLOG, 1024)
-                    .childHandler(new ChannelInitializer<SocketChannel>() {
-                        @Override
-                        protected void initChannel(SocketChannel ch) {
-                            // 1. 心跳检测：读空闲超时触发IdleStateEvent
-                            ch.pipeline().addLast(new IdleStateHandler(idleTime, 0, 0, TimeUnit.SECONDS));
-                            // 2. HTTP编解码器（WebSocket基于HTTP握手）
-                            ch.pipeline().addLast(new HttpServerCodec());
-                            // 3. HTTP消息聚合（处理大消息）
-                            ch.pipeline().addLast(new HttpObjectAggregator(65536));
-                            // 4. JSON解码器（处理JSON消息）
-                            ch.pipeline().addLast(new JsonObjectDecoder());
-                            // 5. WebSocket协议处理器（指定WebSocket路径）
-                            ch.pipeline().addLast(new WebSocketServerProtocolHandler("/ws"));
-                            // 6. 自定义消息处理器
-                            ch.pipeline().addLast(chatMessageHandler);
-                        }
-                    });
+            try {
+                ServerBootstrap bootstrap = new ServerBootstrap();
+                bootstrap.group(bossGroup, workerGroup)
+                        .channel(NioServerSocketChannel.class)
+                        .option(ChannelOption.SO_KEEPALIVE, true)
+                        .option(ChannelOption.SO_BACKLOG, 1024)
+                        .childHandler(new ChannelInitializer<SocketChannel>() {
+                            @Override
+                            protected void initChannel(SocketChannel ch) {
+                                ch.pipeline().addLast(new IdleStateHandler(idleTime, 0, 0, TimeUnit.SECONDS));
+                                ch.pipeline().addLast(new HttpServerCodec());
+                                ch.pipeline().addLast(new HttpObjectAggregator(65536));
+                                ch.pipeline().addLast(new JsonObjectDecoder());
+                                ch.pipeline().addLast(new WebSocketServerProtocolHandler("/ws"));
+                                ch.pipeline().addLast(chatMessageHandler);
+                            }
+                        });
 
-            // 绑定端口并启动
-            ChannelFuture future = bootstrap.bind(port).sync();
-            log.info("Netty WebSocket服务启动成功，端口：{}", port);
-            // 阻塞直到服务关闭
-            future.channel().closeFuture().sync();
-        } catch (InterruptedException e) {
-            log.error("Netty服务启动失败", e);
-            Thread.currentThread().interrupt();
-        }
+                ChannelFuture future = bootstrap.bind(port).sync();
+                log.info("Netty WebSocket 启动成功, 端口: {}", port);
+                future.channel().closeFuture().sync();
+            } catch (InterruptedException e) {
+                log.error("Netty 启动失败", e);
+                Thread.currentThread().interrupt();
+            }
+        }, "netty-websocket");
+        nettyThread.setDaemon(false);
+        nettyThread.start();
     }
 
-    /**
-     * 停止Netty服务（Spring销毁前执行）
-     */
     @PreDestroy
     public void stop() {
-        if (bossGroup != null) {
-            bossGroup.shutdownGracefully();
-        }
-        if (workerGroup != null) {
-            workerGroup.shutdownGracefully();
-        }
-        log.info("Netty WebSocket服务已停止");
+        if (bossGroup != null) bossGroup.shutdownGracefully();
+        if (workerGroup != null) workerGroup.shutdownGracefully();
+        log.info("Netty WebSocket 已停止");
     }
 }
