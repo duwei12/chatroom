@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>聊天室</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .box {
+            width: 100%;
+            max-width: 480px;
+            background: #1e293b;
+            border-radius: 16px;
+            border: 1px solid #334155;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+        }
+
+        .panel { display: none; padding: 24px; }
+        .panel.show { display: block; }
+
+        .login h1, .rooms h1 { font-size: 1.5rem; margin-bottom: 8px; color: #60a5fa; }
+        .login p, .rooms p { color: #94a3b8; font-size: 0.9rem; margin-bottom: 20px; }
+
+        .login input, .create input {
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 1rem;
+            border: 1px solid #475569;
+            border-radius: 8px;
+            background: #334155;
+            color: #fff;
+            margin-bottom: 12px;
+        }
+        .login input:focus, .create input:focus {
+            outline: none;
+            border-color: #60a5fa;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: #3b82f6;
+            color: white;
+        }
+        .btn:hover { background: #2563eb; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-block { width: 100%; }
+        .btn-sm { padding: 8px 16px; font-size: 0.9rem; }
+        .btn-ghost { background: transparent; color: #94a3b8; border: 1px solid #475569; }
+        .btn-ghost:hover { color: #fff; border-color: #64748b; }
+
+        .error { color: #f87171; font-size: 0.85rem; margin-bottom: 12px; display: none; }
+
+        .create { display: flex; gap: 8px; margin-bottom: 20px; }
+        .create input { margin-bottom: 0; flex: 1; }
+
+        .room-list { max-height: 320px; overflow-y: auto; }
+        .room-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            margin-bottom: 8px;
+            background: #334155;
+            border: 1px solid #475569;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .room-item:hover { border-color: #60a5fa; }
+        .room-item .name { font-weight: 500; }
+        .room-item .meta { font-size: 0.8rem; color: #94a3b8; margin-top: 4px; }
+
+        .chat { display: none; flex-direction: column; height: 520px; }
+        .chat.show { display: flex; }
+
+        .chat-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid #334155;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .chat-header .left { display: flex; align-items: center; gap: 12px; }
+        .status { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+        .status.off { background: #ef4444; }
+        .chat-header .room-name { font-weight: 600; }
+        .chat-header .user { font-size: 0.85rem; color: #94a3b8; }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .msg { max-width: 80%; animation: fade 0.2s ease; }
+        @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+        .msg.self { align-self: flex-end; text-align: right; }
+        .msg .who { font-size: 0.75rem; color: #60a5fa; margin-bottom: 4px; }
+        .msg .body { padding: 8px 12px; border-radius: 12px; font-size: 0.95rem; }
+        .msg.self .body { background: #3b82f6; }
+        .msg:not(.self) .body { background: #334155; border: 1px solid #475569; }
+        .msg.sys .body { background: transparent; color: #94a3b8; text-align: center; font-size: 0.85rem; }
+
+        .input-bar {
+            padding: 12px 16px;
+            border-top: 1px solid #334155;
+            display: flex;
+            gap: 8px;
+        }
+        .input-bar input {
+            flex: 1;
+            padding: 10px 14px;
+            font-size: 0.95rem;
+            border: 1px solid #475569;
+            border-radius: 8px;
+            background: #334155;
+            color: #fff;
+        }
+        .input-bar input:focus { outline: none; border-color: #60a5fa; }
+        .input-bar .send { padding: 10px 20px; }
+
+        .empty { text-align: center; color: #64748b; padding: 40px 20px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <div class="panel login show" id="login">
+            <h1>聊天室</h1>
+            <p>输入昵称进入</p>
+            <div class="error" id="err"></div>
+            <input type="text" id="nick" placeholder="昵称" maxlength="20" autocomplete="off">
+            <button class="btn btn-block" id="enter">进入</button>
+        </div>
+
+        <div class="panel rooms" id="rooms">
+            <h1>聊天室列表</h1>
+            <p>创建新房间或选择一个房间加入</p>
+            <div class="create">
+                <input type="text" id="roomName" placeholder="新房间名称" maxlength="30" autocomplete="off">
+                <button class="btn btn-sm" id="createBtn">创建</button>
+            </div>
+            <div class="error" id="roomErr"></div>
+            <div class="room-list" id="roomList"></div>
+            <button class="btn btn-ghost btn-block" id="logoutBtn" style="margin-top:16px">退出登录</button>
+        </div>
+
+        <div class="chat" id="chat">
+            <div class="chat-header">
+                <div class="left">
+                    <button class="btn btn-ghost btn-sm" id="backBtn">← 返回</button>
+                    <span class="status" id="dot"></span>
+                    <div>
+                        <div class="room-name" id="roomTitle"></div>
+                        <div class="user" id="userName"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="messages" id="msgs"></div>
+            <div class="input-bar">
+                <input type="text" id="text" placeholder="输入消息，Enter 发送" maxlength="500" autocomplete="off">
+                <button class="btn send" id="send">发送</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = location.origin;
+        const WS = 'ws://' + location.hostname + ':8888/ws';
+
+        let ws, uid, token, currentRoom, pingTimer, roomList = [];
+
+        const $ = id => document.getElementById(id);
+        const nick = $('nick'), enter = $('enter'), err = $('err'), login = $('login');
+        const rooms = $('rooms'), roomListEl = $('roomList'), roomName = $('roomName'), createBtn = $('createBtn'), roomErr = $('roomErr'), logoutBtn = $('logoutBtn');
+        const chat = $('chat'), roomTitle = $('roomTitle'), userName = $('userName'), dot = $('dot'), backBtn = $('backBtn');
+        const msgs = $('msgs'), text = $('text'), send = $('send');
+
+        function showErr(el, t) { el.textContent = t; el.style.display = 'block'; }
+        function hideErr(el) { el.textContent = ''; el.style.display = 'none'; }
+
+        function showPanel(p) {
+            login.classList.remove('show');
+            rooms.classList.remove('show');
+            chat.classList.remove('show');
+            if (p) p.classList.add('show');
+        }
+
+        // 默认展示登录页（避免在部分部署环境下初始空白）
+        showPanel(login);
+
+        function addMsg(m, isSelf, isSys) {
+            const d = document.createElement('div');
+            d.className = 'msg' + (isSelf ? ' self' : '') + (isSys ? ' sys' : '');
+            const t = m.timestamp ? new Date(m.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+            if (isSys) {
+                d.innerHTML = '<div class="body">' + escapeHtml(m.content) + '</div>';
+            } else {
+                d.innerHTML = (m.senderId ? '<div class="who">' + escapeHtml(m.senderId) + '</div>' : '') +
+                    '<div class="body">' + escapeHtml(m.content) + '</div>' +
+                    (t ? '<small style="color:#64748b;font-size:11px">' + t + '</small>' : '');
+            }
+            msgs.appendChild(d);
+            msgs.scrollTop = msgs.scrollHeight;
+        }
+
+        function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        async function loadRooms() {
+            try {
+                const r = await fetch(API + '/api/rooms');
+                roomList = await r.json();
+                renderRoomList();
+            } catch (e) {
+                roomList = [];
+                renderRoomList();
+            }
+        }
+
+        function renderRoomList() {
+            if (roomList.length === 0) {
+                roomListEl.innerHTML = '<div class="empty">暂无房间，创建一个吧</div>';
+                return;
+            }
+            roomListEl.innerHTML = roomList.map(r => `
+                <div class="room-item" data-id="${escapeHtml(r.id)}" data-name="${escapeHtml(r.name)}">
+                    <div>
+                        <div class="name">${escapeHtml(r.name)}</div>
+                        <div class="meta">创建者: ${escapeHtml(r.creatorId || '-')}</div>
+                    </div>
+                </div>
+            `).join('');
+            roomListEl.querySelectorAll('.room-item').forEach(el => {
+                el.onclick = () => enterRoom(el.dataset.id, el.dataset.name);
+            });
+        }
+
+        async function doEnter() {
+            const n = nick.value.trim();
+            if (!n) { showErr(err, '请输入昵称'); return; }
+            enter.disabled = true;
+            hideErr(err);
+            try {
+                const r = await fetch(API + '/api/token/' + encodeURIComponent(n));
+                if (!r.ok) throw new Error();
+                const d = await r.json();
+                token = d.token;
+                uid = n;
+                await loadRooms();
+                showPanel(rooms);
+            } catch (e) {
+                showErr(err, '连接失败，请确认服务已启动');
+                enter.disabled = false;
+            }
+        }
+
+        async function doCreateRoom() {
+            const name = roomName.value.trim();
+            if (!name) { showErr(roomErr, '请输入房间名称'); return; }
+            createBtn.disabled = true;
+            hideErr(roomErr);
+            try {
+                const r = await fetch(API + '/api/rooms', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, creatorId: uid })
+                });
+                if (!r.ok) { const err = await r.json().catch(() => ({})); throw new Error(err.message || '创建失败'); }
+                const room = await r.json();
+                roomList.unshift(room);
+                renderRoomList();
+                roomName.value = '';
+                enterRoom(room.id, room.name);
+            } catch (e) {
+                showErr(roomErr, e.message || '创建房间失败');
+            }
+            createBtn.disabled = false;
+        }
+
+        function enterRoom(roomId, roomNameStr) {
+            currentRoom = { id: roomId, name: roomNameStr };
+            connect(roomId);
+        }
+
+        function connect(roomId) {
+            ws = new WebSocket(WS);
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: 'CONNECT', token, roomId }));
+                pingTimer = setInterval(() => {
+                    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'PING' }));
+                }, 30000);
+            };
+            ws.onmessage = ev => {
+                try {
+                    const m = JSON.parse(ev.data);
+                    if (m.type === 'CONNECT_SUCCESS') {
+                        showPanel(chat);
+                        roomTitle.textContent = currentRoom.name;
+                        userName.textContent = uid;
+                        dot.classList.remove('off');
+                        addMsg({ content: '已加入 ' + currentRoom.name }, false, true);
+                        text.focus();
+                    } else if (m.type === 'MESSAGE') {
+                        addMsg(m, m.senderId === uid, false);
+                    } else if (m.type === 'ERROR') {
+                        addMsg({ content: m.content }, false, true);
+                        if (m.content && (m.content.includes('房间') || m.content.includes('认证'))) {
+                            setTimeout(() => { doBack(); }, 1500);
+                        }
+                    }
+                } catch (e) {}
+            };
+            ws.onclose = () => {
+                clearInterval(pingTimer);
+                dot.classList.add('off');
+                if (uid && chat.classList.contains('show')) addMsg({ content: '连接已断开' }, false, true);
+            };
+            ws.onerror = () => {
+                showErr(roomErr, 'WebSocket 连接失败 (端口 8888)');
+            };
+        }
+
+        function doSend() {
+            const c = text.value.trim();
+            if (!c || !ws || ws.readyState !== 1) return;
+            ws.send(JSON.stringify({ type: 'MESSAGE', content: c }));
+            text.value = '';
+        }
+
+        function doBack() {
+            if (ws && ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'DISCONNECT' }));
+                ws.close();
+            }
+            ws = null;
+            clearInterval(pingTimer);
+            msgs.innerHTML = '';
+            showPanel(rooms);
+            loadRooms();
+        }
+
+        function doLogout() {
+            if (ws && ws.readyState === 1) { ws.close(); }
+            ws = uid = token = currentRoom = null;
+            clearInterval(pingTimer);
+            showPanel(login);
+            nick.value = '';
+            enter.disabled = false;
+            hideErr(err);
+            hideErr(roomErr);
+        }
+
+        enter.onclick = doEnter;
+        nick.onkeydown = e => { if (e.key === 'Enter') doEnter(); };
+        createBtn.onclick = doCreateRoom;
+        roomName.onkeydown = e => { if (e.key === 'Enter') doCreateRoom(); };
+        logoutBtn.onclick = doLogout;
+        send.onclick = doSend;
+        text.onkeydown = e => { if (e.key === 'Enter') doSend(); };
+        backBtn.onclick = doBack;
+    </script>
+</body>
+</html>
